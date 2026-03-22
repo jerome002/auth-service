@@ -11,13 +11,3 @@ export const loginSchema = z.object({
   path: ["email"], // error will appear on email field
 });
 
-// Registration schema: for future use
-export const registerSchema = z.object({
-  firstName: z.string().min(2),
-  lastName: z.string().min(2),
-  middleName: z.string().optional().nullable(),
-  email: z.string().email(),
-  username: z.string().min(3),
-  password: z.string().min(6),
-  role: z.enum(["USER", "ADMIN"]).default("USER"), // match your Prisma Role enum
-});

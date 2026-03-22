@@ -1,70 +1,160 @@
-import { User } from "@prisma/client";
+import { prisma } from "../config/db.js";
+import { TokenType } from "@prisma/client";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
-import { prisma } from "../config/db.js";
+import crypto from "crypto";
 
-// Custom authentication error
+/**
+ * Custom Error for Authentication specific issues
+ */
 export class AuthenticationError extends Error {
-  constructor(message: string) {
+  constructor(public message: string, public statusCode: number = 401) {
     super(message);
-    this.name = "AuthenticationError";
   }
 }
 
-// Validate email/username and password
-export async function validateUserCredentials(identifier: string, password: string): Promise<User> {
-  const user = await prisma.user.findFirst({
-    where: {
-      OR: [{ email: identifier }, { username: identifier }],
+/**
+ * Private Helper: Generate a short-lived Access Token (JWT)
+ */
+const generateAccessToken = (userId: string, role: string) => {
+  return jwt.sign(
+    { userId, role },
+    process.env.JWT_SECRET!,
+    { expiresIn: "15m" } // Access tokens should be short-lived
+  );
+};
+
+/**
+ * Private Helper: Generate and Save a new Refresh Token (Session)
+ * This avoids duplicate code between loginUser and refreshTokens.
+ */
+const createSession = async (userId: string) => {
+  const refreshToken = crypto.randomBytes(40).toString("hex");
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 Days
+
+  await prisma.token.create({
+    data: {
+      token: refreshToken,
+      type: TokenType.REFRESH,
+      userId: userId,
+      expiresAt,
     },
   });
 
-  const invalidError = new AuthenticationError("Invalid credentials");
+  return refreshToken;
+};
 
-  if (!user) throw invalidError;
+/**
+ * Handles initial login and issues the first session
+ */
+export async function loginUser({ identifier, password }: any) {
+  // 1. Find User by Email or Username
+  const user = await prisma.user.findFirst({
+    where: {
+      OR: [
+        { email: identifier.toLowerCase().trim() },
+        { username: identifier.trim() }
+      ],
+    },
+  });
 
-  const passwordMatches = await bcrypt.compare(password, user.passwordHash);
-  if (!passwordMatches) throw invalidError;
+  if (!user) throw new AuthenticationError("Invalid credentials");
 
-  return user;
-}
+  // 2. The Verification Guardrail
+  if (!user.isVerified) {
+    throw new AuthenticationError("Please verify your email before logging in.", 403);
+  }
 
-// Generate JWT token
-export function generateToken(user: { id: string; email: string }): string {
-  if (!process.env.JWT_SECRET) throw new Error("JWT_SECRET is not defined");
+  // 3. Verify Password
+  const isMatch = await bcrypt.compare(password, user.password);
+  if (!isMatch) throw new AuthenticationError("Invalid credentials");
 
-  const payload = { userId: user.id, email: user.email };
-  return jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: "1h" });
-}
+  // 4. Generate Access Token and Create DB Session
+  const accessToken = generateAccessToken(user.id, user.role);
+  const refreshToken = await createSession(user.id);
 
-// Remove sensitive fields before sending user to client
-export function sanitizeUser(user: User) {
   return {
-    id: user.id,
-    email: user.email,
-    username: user.username,
-    createdAt: user.createdAt,
+    user: {
+      id: user.id,
+      email: user.email,
+      username: user.username,
+      role: user.role,
+    },
+    accessToken,
+    refreshToken,
   };
 }
 
-// Login function
-export async function loginUser(input: { identifier: string; password: string }) {
+/**
+ * Verifies email using the token sent via MailService
+ */
+export async function verifyEmail(token: string) {
+  // 1. Find the verification token
+  const tokenRecord = await prisma.token.findUnique({
+    where: { 
+      token: token,
+      type: TokenType.VERIFICATION 
+    },
+  });
+
+  // 2. Validate existence and expiry
+  if (!tokenRecord || tokenRecord.expiresAt < new Date()) {
+    throw new AuthenticationError("Invalid or expired verification link.", 400);
+  }
+
+  // 3. Atomic Update: Verify User and Clean Up Token
+  await prisma.$transaction([
+    prisma.user.update({
+      where: { id: tokenRecord.userId },
+      data: { isVerified: true },
+    }),
+    prisma.token.delete({
+      where: { id: tokenRecord.id },
+    }),
+  ]);
+
+  return { success: true };
+}
+
+/**
+ * Refresh Token Rotation: Swaps old refresh token for a brand new pair
+ */
+export async function refreshTokens(oldRefreshToken: string) {
+  // 1. Find the token in DB
+  const savedToken = await prisma.token.findUnique({
+    where: {
+      token: oldRefreshToken,
+      type: TokenType.REFRESH
+    },
+    include: { user: true }
+  });
+
+  // 2. Validate Token (Exists & Not Expired)
+  if (!savedToken || savedToken.expiresAt < new Date()) {
+    if (savedToken) await prisma.token.delete({ where: { id: savedToken.id } });
+    throw new AuthenticationError("Session expired. Please login again.", 401);
+  }
+
+  // 3. ROTATION: Delete the used token immediately (Security best practice)
+  await prisma.token.delete({ where: { id: savedToken.id } });
+
+  // 4. Issue new pair using the helper
+  const accessToken = generateAccessToken(savedToken.user.id, savedToken.user.role);
+  const refreshToken = await createSession(savedToken.user.id);
+
+  return { accessToken, refreshToken };
+}
+
+/**
+ * Invalidate session on logout
+ */
+export async function logoutUser(refreshToken: string) {
   try {
-    const user = await validateUserCredentials(input.identifier, input.password);
-    const token = generateToken({ id: user.id.toString(), email: user.email });
-    const safeUser = sanitizeUser(user);
-
-    return {
-      success: true,
-      data: { token, user: safeUser },
-      message: "Login successful",
-    };
+    await prisma.token.delete({
+      where: { token: refreshToken },
+    });
   } catch (err) {
-    if (err instanceof AuthenticationError) {
-      return { success: false, message: "Invalid credentials" };
-    }
-
-    console.error(err); // internal logging
-    return { success: false, message: "Internal server error" };
+    // If token is already gone, logout is effectively successful
+    console.warn("Logout: Token already invalidated or non-existent");
   }
 }

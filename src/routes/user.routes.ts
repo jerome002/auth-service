@@ -1,47 +1,44 @@
-// src/routes/user.routes.ts
 import { Router } from "express";
-import { UserController } from "../controllers/user.controller.js";
-import { authenticate } from "../middlewares/auth.middleware.js";
+import { 
+  getMeController, 
+  getUserController, 
+  updateUserController, 
+  deleteUserController, 
+  listUsersController 
+} from "../controllers/user.controller.js";
+import { authenticate, authorize } from "../middlewares/auth.middleware.js";
 import { Role } from "@prisma/client";
+
 const router = Router();
 
-// Mount JWT auth middleware for all user routes
-router.use(authenticate); // attaches req.user
+/**
+ * PROTECTED ROUTES (Logged-in Users Only)
+ * All routes defined below this middleware require a valid Bearer Token.
+ */
+router.use(authenticate); 
+
+// 1. Get own profile (Context-aware: uses req.user.id)
+router.get("/me", getMeController);
+
+// 2. Get specific user 
+// Controller logic allows a user to see their own profile OR an Admin to see any.
+router.get("/:id", getUserController);
+
+// 3. Update profile
+// Controller logic allows a user to update their own profile OR an Admin to update any.
+router.put("/:id", updateUserController);
+
 
 /**
- * GET /users/me
- * Get currently logged-in user
+ * ADMIN ONLY ROUTES
+ * These require both a valid token AND the Role.ADMIN in the JWT payload.
  */
-router.get("/me", UserController.getMe);
 
-/**
- * GET /users/:id
- * Get user by ID
- * Admin or self only
- */
-router.get("/:id", UserController.getUser);
+// 4. List all users (with pagination)
+router.get("/", authorize(Role.ADMIN), listUsersController);
 
-/**
- * PUT /users/:id
- * Update user by ID
- * Admin or self only
- */
-router.put("/:id", UserController.updateUser);
-
-/**
- * DELETE /users/:id
- * Delete user by ID
- * Admin or self only
- */
-router.delete("/:id", UserController.deleteUser);
-
-/**
- * GET /users
- * List all users (admin-only)
- */
-router.get("/", UserController.listUsers);
-
-
-router.post('/register', UserController.register);
+// 5. Delete user
+// Note: We use authorize(Role.ADMIN) here because deleting is a high-stakes action.
+router.delete("/:id", authorize(Role.ADMIN), deleteUserController);
 
 export default router;

@@ -4,6 +4,33 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String    @id @default(uuid())
+  firstName     String
+  middleName    String?
+  lastName      String
+  email         String    @unique
+  username      String    @unique
+  password      String    // Renamed from passwordHash
+  role          Role      @default(USER)
+  isActive      Boolean   @default(true)
+  isVerified    Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  tokens        Token[]
+}
+
+model Token {
+  id        String    @id @default(uuid())
+  token     String    @unique
+  type      TokenType
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime  @default(now())
 }
 
 enum Role {
@@ -11,17 +38,8 @@ enum Role {
   ADMIN
 }
 
-model User {
-  id         String   @id @default(uuid())
-  email      String   @unique
-  username   String   @unique
-  password   String   // Hashed
-  firstName  String
-  middleName String?
-  lastName   String
-  role       Role     @default(USER)
-  isActive   Boolean  @default(true)
-  isVerified Boolean  @default(false)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+enum TokenType {
+  VERIFICATION
+  PASSWORD_RESET
+  REFRESH
 }

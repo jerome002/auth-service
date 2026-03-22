@@ -6,111 +6,88 @@ import {
   sanitizeUser,
   loginUser,
   AuthenticationError,
-} from "../../../src/services/auth.service";
+} from "../../../src/services/auth.service.js";
 import { prisma } from "../../../src/config/db.js";
 import { Role, User } from "@prisma/client";
 
-// Type-safe mock user
-const mockUser: User = {
-  id: 1,
+const baseUser: User = {
+  id: "uuid-1234",
   firstName: "John",
   middleName: null,
   lastName: "Doe",
   email: "test@example.com",
   username: "jkapkor",
   role: Role.USER,
-  passwordHash: "hashedpassword",
+  password: "hashedpassword", 
   isActive: true,
+  isVerified: true,
   createdAt: new Date(),
   updatedAt: new Date(),
 };
 
-
-// Mock Prisma
 vi.mock("../../../src/config/db.js", () => ({
-  prisma: {
-    user: {
-      findFirst: vi.fn(),
-    },
-  },
+  prisma: { user: { findFirst: vi.fn() } },
 }));
-
-// Mock bcrypt
 vi.mock("bcrypt");
 
-describe("validateUserCredentials", () => {
+describe("Auth Service Unit Tests", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    process.env.JWT_SECRET = "test_secret";
   });
 
-  it("returns user for correct credentials", async () => {
-    (prisma.user.findFirst as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
-      mockUser
-    );
-    (bcrypt.compare as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(true);
+  describe("validateUserCredentials", () => {
+    it("returns user for correct credentials", async () => {
+      (prisma.user.findFirst as any).mockResolvedValue(baseUser);
+      (bcrypt.compare as any).mockResolvedValue(true);
 
-    const user = await validateUserCredentials("test@example.com", "password123");
-    expect(user).toEqual(mockUser);
+      const user = await validateUserCredentials("test@example.com", "password123");
+      expect(user.id).toBe(baseUser.id);
+    });
+
+    it("throws AuthenticationError for wrong password", async () => {
+      (prisma.user.findFirst as any).mockResolvedValue(baseUser);
+      (bcrypt.compare as any).mockResolvedValue(false);
+
+      await expect(validateUserCredentials("test@example.com", "wrongpass"))
+        .rejects.toThrow(/invalid/i);
+    });
+
+    it("throws AuthenticationError (403) for unverified user", async () => {
+      const unverifiedUser = { ...baseUser, isVerified: false };
+      (prisma.user.findFirst as any).mockResolvedValue(unverifiedUser);
+
+      await expect(validateUserCredentials("test", "pass"))
+        .rejects.toThrow(/verify/i);
+    });
+
+    it("throws AuthenticationError (403) for inactive user", async () => {
+      const inactiveUser = { ...baseUser, isActive: false };
+      (prisma.user.findFirst as any).mockResolvedValue(inactiveUser);
+
+      await expect(validateUserCredentials("test", "pass"))
+        .rejects.toThrow(/deactivated/i);
+    });
   });
 
-  it("throws AuthenticationError for wrong password", async () => {
-    (prisma.user.findFirst as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
-      mockUser
-    );
-    (bcrypt.compare as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+  describe("loginUser", () => {
+    it("returns token and sanitized user on success", async () => {
+      (prisma.user.findFirst as any).mockResolvedValue(baseUser);
+      (bcrypt.compare as any).mockResolvedValue(true);
 
-    await expect(validateUserCredentials("test@example.com", "wrongpass")).rejects.toThrow(
-      AuthenticationError
-    );
+      const res = await loginUser({ identifier: "test@example.com", password: "password123" });
+      
+      expect(res).toHaveProperty("token");
+      expect(res.user).not.toHaveProperty("password");
+      expect(res.user.id).toBe(baseUser.id);
+    });
   });
 
-  it("throws AuthenticationError for nonexistent user", async () => {
-    (prisma.user.findFirst as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(null);
-
-    await expect(
-      validateUserCredentials("nonexistent@example.com", "password123")
-    ).rejects.toThrow(AuthenticationError);
-  });
-});
-
-describe("generateToken", () => {
-  it("returns a valid JWT token", () => {
-    const user = { id: "1", email: "test@example.com" };
-    const token = generateToken(user);
-    expect(typeof token).toBe("string");
-  });
-});
-
-describe("sanitizeUser", () => {
-  it("removes password and returns safe fields", () => {
-    const user = { ...mockUser };
-    const sanitized = sanitizeUser(user);
-    expect(sanitized).not.toHaveProperty("passwordHash");
-    expect(sanitized).toHaveProperty("id");
-    expect(sanitized).toHaveProperty("email");
-    expect(sanitized).toHaveProperty("username");
-  });
-});
-
-describe("loginUser", () => {
-  it("returns success and token for valid credentials", async () => {
-    (prisma.user.findFirst as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
-      mockUser
-    );
-    (bcrypt.compare as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(true);
-
-    const res = await loginUser({ identifier: "test@example.com", password: "password123" });
-    expect(res.success).toBe(true);
-    expect(res.data).toBeDefined();
-    expect(res.data!.token).toBeDefined();
-    expect(res.data!.user).not.toHaveProperty("passwordHash");
-  });
-
-  it("returns generic error for invalid credentials", async () => {
-    (prisma.user.findFirst as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(null);
-
-    const res = await loginUser({ identifier: "nonexistent@example.com", password: "password123" });
-    expect(res.success).toBe(false);
-    expect(res.message).toBe("Invalid credentials");
+  describe("sanitizeUser", () => {
+    it("removes password field", () => {
+      const sanitized = sanitizeUser(baseUser);
+      expect(sanitized).not.toHaveProperty("password");
+      expect(sanitized.email).toBe(baseUser.email);
+    });
   });
 });

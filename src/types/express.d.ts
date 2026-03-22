@@ -1,14 +1,15 @@
-import * as express from 'express';
+import { Role } from "@prisma/client";
 
 declare global {
   namespace Express {
     interface Request {
-      // Using 'any' for now to stop the immediate crash, 
-      // but you can replace this with your User interface later.
-      user?: any; 
+      user: {
+        id: string;
+        email: string;
+        role: Role;
+      };
     }
   }
 }
 
-// This empty export is necessary to turn this file into a module
 export {};
