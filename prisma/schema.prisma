@@ -8,19 +8,27 @@ datasource db {
 }
 
 model User {
-  id            String    @id @default(uuid())
-  firstName     String
-  middleName    String?
-  lastName      String
-  email         String    @unique
-  username      String    @unique
-  password      String    // Renamed from passwordHash
-  role          Role      @default(USER)
-  isActive      Boolean   @default(true)
-  isVerified    Boolean   @default(true)
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-  tokens        Token[]
+  id           String    @id @default(uuid())
+  firstName    String
+  middleName   String?
+  lastName     String
+  email        String    @unique
+  username     String    @unique
+  password     String    
+  role         Role      @default(USER)
+  isActive     Boolean   @default(true)
+  isVerified   Boolean   @default(false) 
+  
+  // Soft Delete
+  deletedAt    DateTime? 
+  
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  tokens       Token[]
+
+  // Performance Indexes
+  @@index([deletedAt])
+  @@index([email, username])
 }
 
 model Token {
@@ -31,6 +39,8 @@ model Token {
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   expiresAt DateTime
   createdAt DateTime  @default(now())
+
+  @@index([userId]) // Faster lookups when clearing user sessions
 }
 
 enum Role {

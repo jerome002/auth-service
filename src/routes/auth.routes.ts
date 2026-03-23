@@ -6,22 +6,29 @@ import {
   verifyEmailController 
 } from "../controllers/auth.controller.js";
 import { registerController } from "../controllers/user.controller.js";
+// import { authRateLimiter } from "../middlewares/rateLimit.middleware.js"; // Decision: Add this later for security
 
 const router = Router();
 
-// Public Registration
+/**
+ * ACCOUNT CREATION & VERIFICATION
+ */
 router.post("/register", registerController);
 
-// Email Verification (Clicked from email link)
+// Decision: GET is correct here as it's usually a link clicked in an inbox.
 router.get("/verify-email", verifyEmailController);
 
-// Login
+
+/**
+ * SESSION MANAGEMENT
+ * Decision: These should eventually have rate-limiting to prevent brute force.
+ */
 router.post("/login", loginController);
 
-// Token Rotation
+// Decision: Token rotation (Refresh)
 router.post("/refresh", refreshController);
 
-// Logout
+// Decision: Invalidation (Logout)
 router.post("/logout", logoutController);
 
 export default router;

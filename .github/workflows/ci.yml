@@ -1,0 +1,36 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      # We spin up a real Postgres DB in the cloud to run tests!
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: mypassword
+          POSTGRES_DB: finflow_test
+        ports:
+          - 5432:5432
+    
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      
+      - run: npm install
+      - run: npx prisma generate
+      # Rule 10: Run migrations on the test DB
+      - run: npx prisma migrate reset --force 
+        env:
+          DATABASE_URL: postgresql://postgres:mypassword@localhost:5432/finflow_test
+      
+      - run: npm test # Run your test suite

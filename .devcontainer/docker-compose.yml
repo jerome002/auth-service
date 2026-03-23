@@ -1,0 +1,19 @@
+version: '3.8'
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    volumes:
+      - ..:/workspaces/${localWorkspaceFolderBasename}:cached
+    network_mode: service:db
+
+  db:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      - POSTGRES_USER=johndoe
+      - POSTGRES_PASSWORD=mypassword
+      - POSTGRES_DB=finflow
+    ports:
+      - '5432:5432'

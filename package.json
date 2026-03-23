@@ -6,11 +6,13 @@
   "main": "dist/server.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "tsc",
+    "postinstall": "prisma generate",
+    "build": "npm run postinstall && tsc",
     "start": "node dist/server.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:ui": "vitest --ui",
     "lint": "echo \"Add ESLint here\"",
     "format": "echo \"Add Prettier here\"",
     "prisma:generate": "prisma generate",
@@ -51,8 +53,8 @@
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.0"
-  }, 
-"prisma": {
-  "seed": "node --loader ts-node/esm prisma/seed.ts"
-}
+  },
+  "prisma": {
+    "seed": "node --loader ts-node/esm prisma/seed.ts"
+  }
 }

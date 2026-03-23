@@ -2,9 +2,11 @@ import { User, Role, TokenType } from "@prisma/client";
 import bcrypt from "bcrypt";
 import crypto from "crypto";
 import { prisma } from "../config/db.js";
-import { MailService } from "./mail.service.js"; // Import the new service
+import { logger } from "../utils/logger.util.js";
+import { CreateUserDTO, UpdateUserDTO } from "../schemas/user.schema.js";
+import { AuthenticationError } from "./auth.service.js";
 
-// Senior Tip: Use Omit to ensure type safety across the service
+// Rule 10: Use Omit for consistent Sanitization
 export type SanitizedUser = Omit<User, "password">;
 
 const sanitizeUser = (user: User): SanitizedUser => {
@@ -14,38 +16,32 @@ const sanitizeUser = (user: User): SanitizedUser => {
 
 export class UserService {
   /**
-   * Creates a user, generates a token, and sends the verification email.
+   * Creates a user using CreateUserDTO
    */
-  static async createUser(input: any): Promise<SanitizedUser> {
-    // 1. Check for duplicates
+  static async createUser(input: CreateUserDTO): Promise<SanitizedUser> {
     const existing = await prisma.user.findFirst({
       where: { 
         OR: [
-          { email: input.email.toLowerCase().trim() }, 
-          { username: input.username.trim() }
-        ] 
+          { email: input.email }, 
+          { username: input.username }
+        ],
+        deletedAt: null 
       },
     });
 
-    if (existing) throw new Error("User with this email or username already exists");
+    if (existing) throw new AuthenticationError("Email or username already taken", 400);
 
-    // 2. Hash Password (Round 12 is industry standard)
     const hashedPassword = await bcrypt.hash(input.password, 12);
 
-    // 3. Database Transaction
-    // Ensures that if the token creation fails, the user isn't left stranded in the DB.
-    const result = await prisma.$transaction(async (tx) => {
-      const newUser = await tx.user.create({
+    // Decision: Transaction ensures user exists ONLY if token is created.
+    const newUser = await prisma.$transaction(async (tx) => {
+      const created = await tx.user.create({
         data: {
-          firstName: input.firstName.trim(),
-          middleName: input.middleName?.trim(),
-          lastName: input.lastName.trim(),
+          ...input,
           email: input.email.toLowerCase().trim(),
-          username: input.username.trim(),
           password: hashedPassword,
-          role: input.role ?? Role.USER,
+          role: Role.USER,
           isVerified: false, 
-          isActive: true,
         },
       });
 
@@ -55,83 +51,124 @@ export class UserService {
         data: {
           token: vToken,
           type: TokenType.VERIFICATION,
-          userId: newUser.id,
-          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 Hours
+          userId: created.id,
+          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
         },
       });
 
-      return { user: newUser, verificationToken: vToken };
+      return created;
     });
 
-    // 4. Trigger Email (Fire and Forget)
-    // We don't 'await' this so the user gets a fast response from the API.
-    // Errors are caught and logged without crashing the registration process.
-    MailService.sendVerificationEmail(result.user.email, result.verificationToken)
-      .catch((err) => console.error("[MailService Error]: Failed to send verification email:", err));
-
-    return sanitizeUser(result.user);
+    logger.info(`User registered successfully: ${newUser.id}`);
+    return sanitizeUser(newUser);
   }
 
+  /**
+   * Get specific user profile
+   */
   static async getUserById(userId: string, requesterRole: Role, requesterId: string): Promise<SanitizedUser> {
-    const user = await prisma.user.findUnique({ where: { id: userId } });
-    if (!user) throw new Error("User not found");
+    const user = await prisma.user.findFirst({ 
+      where: { 
+        id: userId,
+        deletedAt: null 
+      } 
+    });
+    
+    if (!user) throw new AuthenticationError("User not found", 404);
 
     if (requesterRole !== Role.ADMIN && requesterId !== userId) {
-      throw new Error("Unauthorized access");
+      throw new AuthenticationError("Unauthorized access", 403);
     }
 
     return sanitizeUser(user);
   }
 
+  /**
+   * Update user details
+   */
   static async updateUser(
     userId: string,
     requesterRole: Role,
     requesterId: string,
-    input: Partial<User & { newPassword?: string }>
+    input: UpdateUserDTO
   ): Promise<SanitizedUser> {
     if (requesterRole !== Role.ADMIN && requesterId !== userId) {
-      throw new Error("Unauthorized");
+      throw new AuthenticationError("Unauthorized", 403);
     }
 
     const user = await prisma.user.findUnique({ where: { id: userId } });
-    if (!user) throw new Error("User not found");
-
-    let updatedPassword = undefined;
-    if (input.newPassword) {
-      updatedPassword = await bcrypt.hash(input.newPassword, 12);
-    }
+    if (!user || user.deletedAt) throw new AuthenticationError("User not found", 404);
 
     const updatedUser = await prisma.user.update({
       where: { id: userId },
-      data: {
-        firstName: input.firstName?.trim() || user.firstName,
-        middleName: input.middleName?.trim() || user.middleName,
-        lastName: input.lastName?.trim() || user.lastName,
-        username: input.username?.trim() || user.username,
-        password: updatedPassword ?? user.password,
-      },
+      data: { ...input },
     });
 
     return sanitizeUser(updatedUser);
   }
 
+  /**
+   * Soft Delete Implementation
+   */
   static async deleteUser(userId: string, requesterRole: Role, requesterId: string) {
     if (requesterRole !== Role.ADMIN && requesterId !== userId) {
-      throw new Error("Unauthorized");
+      throw new AuthenticationError("Unauthorized", 403);
     }
 
-    await prisma.user.delete({ where: { id: userId } });
+    await prisma.$transaction([
+      prisma.user.update({
+        where: { id: userId },
+        data: { 
+          deletedAt: new Date(),
+          isActive: false 
+        },
+      }),
+      prisma.token.deleteMany({
+        where: { userId: userId }
+      })
+    ]);
+
+    logger.info(`User ${userId} soft-deleted.`);
     return { success: true };
   }
 
+  /**
+   * Restore soft-deleted account (Admin Only)
+   */
+  static async restoreUser(userId: string, requesterRole: Role): Promise<SanitizedUser> {
+    if (requesterRole !== Role.ADMIN) {
+      throw new AuthenticationError("Unauthorized: Only admins can restore accounts", 403);
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    
+    if (!user) throw new AuthenticationError("User not found", 404);
+    if (!user.deletedAt) throw new AuthenticationError("User is already active", 400);
+
+    const restoredUser = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        deletedAt: null,
+        isActive: true,
+      },
+    });
+
+    logger.info(`Admin restored user: ${userId}`);
+    return sanitizeUser(restoredUser);
+  }
+
+  /**
+   * List users (Admin only)
+   */
   static async listUsers(requesterRole: Role, skip = 0, take = 50): Promise<SanitizedUser[]> {
-    if (requesterRole !== Role.ADMIN) throw new Error("Unauthorized access: Admin only");
+    if (requesterRole !== Role.ADMIN) throw new AuthenticationError("Admin only", 403);
 
     const users = await prisma.user.findMany({ 
+      where: { deletedAt: null },
       skip, 
       take,
       orderBy: { createdAt: 'desc' } 
     });
     return users.map(sanitizeUser);
   }
-}
+} 

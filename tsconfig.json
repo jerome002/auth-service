@@ -10,10 +10,22 @@
     "strict": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
-    "isolatedModules": true
+    "isolatedModules": true,
+    
+    /*Type Discovery */
+    "typeRoots": [
+      "./node_modules/@types",
+      "./src/types"
+    ]
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"],
+  "include": [
+    "src/**/*",
+    "src/types/**/*.d.ts" 
+  ],
+  "exclude": [
+    "node_modules", 
+    "dist"
+  ],
   "ts-node": {
     "esm": true,
     "experimentalSpecifierResolution": "node"

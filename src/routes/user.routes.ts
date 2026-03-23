@@ -4,7 +4,8 @@ import {
   getUserController, 
   updateUserController, 
   deleteUserController, 
-  listUsersController 
+  listUsersController,
+  restoreUserController // Added the new restore action
 } from "../controllers/user.controller.js";
 import { authenticate, authorize } from "../middlewares/auth.middleware.js";
 import { Role } from "@prisma/client";
@@ -12,33 +13,33 @@ import { Role } from "@prisma/client";
 const router = Router();
 
 /**
- * PROTECTED ROUTES (Logged-in Users Only)
- * All routes defined below this middleware require a valid Bearer Token.
+ * 1. PROTECTED ROUTES (Logged-in Users Only)
  */
 router.use(authenticate); 
 
-// 1. Get own profile (Context-aware: uses req.user.id)
+// Get own profile
 router.get("/me", getMeController);
 
-// 2. Get specific user 
-// Controller logic allows a user to see their own profile OR an Admin to see any.
+// Get specific user (Logic inside: Self or Admin)
 router.get("/:id", getUserController);
 
-// 3. Update profile
-// Controller logic allows a user to update their own profile OR an Admin to update any.
+// Update profile (Logic inside: Self or Admin)
 router.put("/:id", updateUserController);
+
+// Delete/Deactivate account (Logic inside: Self or Admin)
+// Decision: Removed authorize(Role.ADMIN) so users can delete their own accounts.
+router.delete("/:id", deleteUserController);
 
 
 /**
- * ADMIN ONLY ROUTES
- * These require both a valid token AND the Role.ADMIN in the JWT payload.
+ * 2. ADMIN ONLY ROUTES
  */
 
-// 4. List all users (with pagination)
+// List all users
 router.get("/", authorize(Role.ADMIN), listUsersController);
 
-// 5. Delete user
-// Note: We use authorize(Role.ADMIN) here because deleting is a high-stakes action.
-router.delete("/:id", authorize(Role.ADMIN), deleteUserController);
+// Restore a soft-deleted user
+// Decision: PATCH is used here as we are partially updating the 'deletedAt' state.
+router.patch("/:id/restore", authorize(Role.ADMIN), restoreUserController);
 
 export default router;

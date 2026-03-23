@@ -1,8 +1,9 @@
 import { prisma } from "../config/db.js";
 import { TokenType } from "@prisma/client";
 import bcrypt from "bcrypt";
-import jwt from "jsonwebtoken";
 import crypto from "crypto";
+import { signToken } from "../utils/jwt.util.js";
+import { logger } from "../utils/logger.util.js"; // Decision: Centralized logging
 
 /**
  * Custom Error for Authentication specific issues
@@ -14,19 +15,7 @@ export class AuthenticationError extends Error {
 }
 
 /**
- * Private Helper: Generate a short-lived Access Token (JWT)
- */
-const generateAccessToken = (userId: string, role: string) => {
-  return jwt.sign(
-    { userId, role },
-    process.env.JWT_SECRET!,
-    { expiresIn: "15m" } // Access tokens should be short-lived
-  );
-};
-
-/**
  * Private Helper: Generate and Save a new Refresh Token (Session)
- * This avoids duplicate code between loginUser and refreshTokens.
  */
 const createSession = async (userId: string) => {
   const refreshToken = crypto.randomBytes(40).toString("hex");
@@ -45,34 +34,40 @@ const createSession = async (userId: string) => {
 };
 
 /**
- * Handles initial login and issues the first session
+ * Handles initial login
  */
 export async function loginUser({ identifier, password }: any) {
-  // 1. Find User by Email or Username
   const user = await prisma.user.findFirst({
     where: {
       OR: [
         { email: identifier.toLowerCase().trim() },
         { username: identifier.trim() }
       ],
+      deletedAt: null,
     },
   });
 
-  if (!user) throw new AuthenticationError("Invalid credentials");
+  if (!user) {
+    logger.warn(`Login failed: User not found or soft-deleted [Identifier: ${identifier}]`);
+    throw new AuthenticationError("Invalid credentials");
+  }
 
-  // 2. The Verification Guardrail
   if (!user.isVerified) {
+    logger.warn(`Login blocked: Email not verified [User: ${user.id}]`);
     throw new AuthenticationError("Please verify your email before logging in.", 403);
   }
 
-  // 3. Verify Password
   const isMatch = await bcrypt.compare(password, user.password);
-  if (!isMatch) throw new AuthenticationError("Invalid credentials");
+  if (!isMatch) {
+    logger.warn(`Login failed: Invalid password [User: ${user.id}]`);
+    throw new AuthenticationError("Invalid credentials");
+  }
 
-  // 4. Generate Access Token and Create DB Session
-  const accessToken = generateAccessToken(user.id, user.role);
+  const accessToken = signToken(user); 
   const refreshToken = await createSession(user.id);
 
+  logger.info(`Login successful [User: ${user.id}]`);
+  
   return {
     user: {
       id: user.id,
@@ -86,10 +81,9 @@ export async function loginUser({ identifier, password }: any) {
 }
 
 /**
- * Verifies email using the token sent via MailService
+ * Verifies email using the token
  */
 export async function verifyEmail(token: string) {
-  // 1. Find the verification token
   const tokenRecord = await prisma.token.findUnique({
     where: { 
       token: token,
@@ -97,12 +91,11 @@ export async function verifyEmail(token: string) {
     },
   });
 
-  // 2. Validate existence and expiry
   if (!tokenRecord || tokenRecord.expiresAt < new Date()) {
+    logger.warn(`Email verification failed: Invalid or expired token`);
     throw new AuthenticationError("Invalid or expired verification link.", 400);
   }
 
-  // 3. Atomic Update: Verify User and Clean Up Token
   await prisma.$transaction([
     prisma.user.update({
       where: { id: tokenRecord.userId },
@@ -113,14 +106,14 @@ export async function verifyEmail(token: string) {
     }),
   ]);
 
+  logger.info(`Email verified successfully [User: ${tokenRecord.userId}]`);
   return { success: true };
 }
 
 /**
- * Refresh Token Rotation: Swaps old refresh token for a brand new pair
+ * Refresh Token Rotation (RS256)
  */
 export async function refreshTokens(oldRefreshToken: string) {
-  // 1. Find the token in DB
   const savedToken = await prisma.token.findUnique({
     where: {
       token: oldRefreshToken,
@@ -129,19 +122,21 @@ export async function refreshTokens(oldRefreshToken: string) {
     include: { user: true }
   });
 
-  // 2. Validate Token (Exists & Not Expired)
-  if (!savedToken || savedToken.expiresAt < new Date()) {
-    if (savedToken) await prisma.token.delete({ where: { id: savedToken.id } });
-    throw new AuthenticationError("Session expired. Please login again.", 401);
+  if (!savedToken || savedToken.expiresAt < new Date() || savedToken.user.deletedAt !== null) {
+    if (savedToken) {
+      await prisma.token.delete({ where: { id: savedToken.id } });
+      logger.warn(`Session revoked: Refresh attempted on expired/deleted account [User: ${savedToken.userId}]`);
+    }
+    throw new AuthenticationError("Session expired or account deactivated. Please login again.", 401);
   }
 
-  // 3. ROTATION: Delete the used token immediately (Security best practice)
+  // Security: Delete used refresh token immediately (Rotation)
   await prisma.token.delete({ where: { id: savedToken.id } });
 
-  // 4. Issue new pair using the helper
-  const accessToken = generateAccessToken(savedToken.user.id, savedToken.user.role);
+  const accessToken = signToken(savedToken.user);
   const refreshToken = await createSession(savedToken.user.id);
 
+  logger.debug(`Token rotation successful [User: ${savedToken.userId}]`);
   return { accessToken, refreshToken };
 }
 
@@ -150,11 +145,11 @@ export async function refreshTokens(oldRefreshToken: string) {
  */
 export async function logoutUser(refreshToken: string) {
   try {
-    await prisma.token.delete({
+    const deleted = await prisma.token.delete({
       where: { token: refreshToken },
     });
+    logger.info(`Logout successful [User: ${deleted.userId}]`);
   } catch (err) {
-    // If token is already gone, logout is effectively successful
-    console.warn("Logout: Token already invalidated or non-existent");
+    logger.warn("Logout: Token already invalidated or non-existent");
   }
 }

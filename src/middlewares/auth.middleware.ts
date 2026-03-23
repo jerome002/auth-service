@@ -1,17 +1,16 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { Role } from '@prisma/client';
-
-interface TokenPayload {
-  userId: string; // Using userId to match your LoginService logic
-  email: string;
-  role: Role;
-}
+import { verifyToken } from '../utils/jwt.util.js';
+import { prisma } from '../config/db.js';
+import { logger } from '../utils/logger.util.js';
+import { AuthenticationError } from '../services/auth.service.js';
 
 /**
- * Main Authentication Guard
+ * Main Authentication Guard (RS256)
+ * Decision: Verifies JWT and checks for Soft Delete status.
  */
-export const authenticate = (req: Request, res: Response, next: NextFunction) => {
+export const authenticate = async (req: Request, res: Response, next: NextFunction) => {
   const authHeader = req.headers.authorization;
 
   if (!authHeader?.startsWith('Bearer ')) {
@@ -24,21 +23,34 @@ export const authenticate = (req: Request, res: Response, next: NextFunction) =>
   const token = authHeader.split(' ')[1];
 
   try {
-    const secret = process.env.JWT_SECRET!;
-    const decoded = jwt.verify(token, secret) as TokenPayload;
+    const decoded = verifyToken(token);
 
-    // Attach to request - matching the structure used in your controllers
+    /**
+     * Rule 3 Enforcement: The "Active User" Check
+     * Decision: We verify that the user hasn't been deleted since the token was issued.
+     */
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.sub },
+      select: { deletedAt: true, isActive: true }
+    });
+
+    if (!user || user.deletedAt || !user.isActive) {
+      logger.warn(`Unauthorized access attempt by deactivated user: ${decoded.sub}`);
+      throw new AuthenticationError("Account is deactivated or does not exist", 401);
+    }
+
+    // Attach to request for controllers (Type-safe thanks to express.d.ts)
     req.user = {
-      id: decoded.userId,
+      id: decoded.sub,
       email: decoded.email,
       role: decoded.role,
     };
 
     next();
-  } catch (error) {
+  } catch (error: any) {
     const message = error instanceof jwt.TokenExpiredError 
       ? 'Token expired' 
-      : 'Invalid token';
+      : (error.message || 'Invalid token');
       
     return res.status(401).json({ success: false, message });
   }
@@ -46,15 +58,16 @@ export const authenticate = (req: Request, res: Response, next: NextFunction) =>
 
 /**
  * RBAC Guard Factory
+ * Decision: Higher-Order Function to handle Role Based Access Control.
  */
 export const authorize = (...allowedRoles: Role[]) => {
   return (req: Request, res: Response, next: NextFunction) => {
-    // If authenticate didn't run or failed
     if (!req.user) {
       return res.status(401).json({ success: false, message: 'Not authenticated' });
     }
 
     if (!allowedRoles.includes(req.user.role)) {
+      logger.warn(`Forbidden access: User ${req.user.id} (Role: ${req.user.role}) tried to access ${req.path}`);
       return res.status(403).json({ 
         success: false, 
         message: 'Forbidden: Insufficient permissions' 

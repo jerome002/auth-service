@@ -1,129 +1,101 @@
-import { Request, Response, NextFunction } from "express";
-import { ZodError, ZodIssue } from "zod";
+import { Request, Response } from "express";
 import { loginSchema } from "../schemas/auth.schema.js";
-import { 
-  loginUser, 
-  logoutUser, 
-  verifyEmail, 
-  refreshTokens, 
-  AuthenticationError 
-} from "../services/auth.service.js";
+import * as AuthService from "../services/auth.service.js";
+import { sendResponse } from "../utils/response.util.js";
+import { asyncHandler } from "../utils/asyncHandler.util.js";
 
 /**
  * Handles User Login
  * POST /api/auth/login
  */
-export async function loginController(req: Request, res: Response, next: NextFunction) {
-  try {
-    const input = loginSchema.parse(req.body);
-    const identifier = input.email ?? input.username;
+export const loginController = asyncHandler(async (req: Request, res: Response) => {
+  // 1. Validation: Zod handles the 'email OR username' logic via .refine()
+  const input = loginSchema.parse(req.body);
+  
+  // Decision: Cleanly extract whichever identifier was provided
+  const identifier = (input.email ?? input.username) as string;
 
-    if (!identifier) {
-      return res.status(400).json({ success: false, message: "Email or username is required" });
-    }
+  // 2. Business Logic
+  const data = await AuthService.loginUser({ 
+    identifier, 
+    password: input.password 
+  });
 
-    const data = await loginUser({ identifier, password: input.password });
-
-    return res.status(200).json({
-      success: true,
-      message: "Login successful",
-      data,
-    });
-
-  } catch (err: unknown) {
-    if (err instanceof ZodError) {
-      return res.status(400).json({
-        success: false,
-        message: "Validation failed",
-        errors: err.issues.map((e: ZodIssue) => ({
-          path: e.path.join("."),
-          message: e.message,
-        })),
-      });
-    }
-
-    if (err instanceof AuthenticationError) {
-      return res.status(err.statusCode).json({ success: false, message: err.message });
-    }
-
-    console.error("[LoginController Error]:", err);
-    return res.status(500).json({ success: false, message: "An internal server error occurred" });
-  }
-}
+  // 3. Response
+  return sendResponse({
+    res,
+    message: "Login successful",
+    data,
+  });
+});
 
 /**
- * Handles Email Verification from Link
+ * Handles Email Verification
  * GET /api/auth/verify-email?token=...
  */
-export async function verifyEmailController(req: Request, res: Response) {
-  try {
-    const { token } = req.query;
+export const verifyEmailController = asyncHandler(async (req: Request, res: Response) => {
+  const token = req.query.token as string;
 
-    if (!token) {
-      return res.status(400).json({ success: false, message: "Verification token is missing" });
-    }
-
-    await verifyEmail(String(token));
-
-    return res.status(200).json({
-      success: true,
-      message: "Email verified successfully. You can now log in."
-    });
-  } catch (err: any) {
-    return res.status(400).json({
-      success: false,
-      message: err.message || "Invalid or expired token"
+  if (!token) {
+    return sendResponse({
+      res,
+      status: 400,
+      message: "Verification token is required",
     });
   }
-}
+
+  await AuthService.verifyEmail(token);
+
+  return sendResponse({
+    res,
+    message: "Email verified successfully. You can now log in.",
+  });
+});
 
 /**
  * Handles Token Refresh (Rotation)
  * POST /api/auth/refresh
  */
-export async function refreshController(req: Request, res: Response) {
-  try {
-    const { refreshToken } = req.body;
+export const refreshController = asyncHandler(async (req: Request, res: Response) => {
+  const { refreshToken } = req.body;
 
-    if (!refreshToken) {
-      return res.status(400).json({ success: false, message: "Refresh token is required" });
-    }
-
-    const data = await refreshTokens(refreshToken);
-
-    return res.status(200).json({
-      success: true,
-      message: "Tokens refreshed successfully",
-      data,
-    });
-  } catch (err: any) {
-    const status = err instanceof AuthenticationError ? err.statusCode : 401;
-    return res.status(status).json({
-      success: false,
-      message: err.message || "Session expired"
+  if (!refreshToken) {
+    return sendResponse({
+      res,
+      status: 400,
+      message: "Refresh token is required",
     });
   }
-}
+
+  const data = await AuthService.refreshTokens(refreshToken);
+
+  return sendResponse({
+    res,
+    message: "Tokens refreshed successfully",
+    data,
+  });
+});
 
 /**
- * Handles User Logout (Session Invalidation)
+ * Handles User Logout
  * POST /api/auth/logout
  */
-export async function logoutController(req: Request, res: Response) {
-  try {
-    const { refreshToken } = req.body;
+export const logoutController = asyncHandler(async (req: Request, res: Response) => {
+  // Decision: We look for the token in the body, but could also check cookies if preferred later
+  const { refreshToken } = req.body;
 
-    if (!refreshToken) {
-      return res.status(400).json({ success: false, message: "Refresh token is required" });
-    }
-
-    await logoutUser(refreshToken);
-
-    return res.status(200).json({
-      success: true,
-      message: "Logged out successfully. Session invalidated.",
+  if (!refreshToken) {
+    return sendResponse({
+      res,
+      status: 400,
+      message: "Refresh token is required to invalidate session",
     });
-  } catch (err) {
-    return res.status(500).json({ success: false, message: "Error during logout" });
   }
-}
+
+  await AuthService.logoutUser(refreshToken);
+
+  return sendResponse({
+    res,
+    message: "Logged out successfully.",
+  });
+});

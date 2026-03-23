@@ -30,3 +30,5 @@ Thumbs.db
 # Prisma
 /prisma/*.db
 /prisma/*.db-journal
+# Security: Never commit private RSA keys
+keys/private.key

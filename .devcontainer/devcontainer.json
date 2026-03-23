@@ -1,0 +1,21 @@
+{
+  "name": "FinFlow-Auth-Service",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "app",
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:1": {}
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "prisma.prisma",
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "irongeek.vscode-env"
+      ]
+    }
+  },
+  "remoteUser": "node",
+  "postCreateCommand": "npm install && npx prisma generate"
+}
