@@ -3,10 +3,12 @@ import {
   loginController, 
   logoutController, 
   refreshController, 
-  verifyEmailController 
+  verifyEmailController,
+  getSessionsController, // Added these imports
+  revokeSessionController 
 } from "../controllers/auth.controller.js";
 import { registerController } from "../controllers/user.controller.js";
-// import { authRateLimiter } from "../middlewares/rateLimit.middleware.js"; // Decision: Add this later for security
+import { authenticate } from "../middlewares/auth.middleware.js";
 
 const router = Router();
 
@@ -15,20 +17,25 @@ const router = Router();
  */
 router.post("/register", registerController);
 
-// Decision: GET is correct here as it's usually a link clicked in an inbox.
+// Clicked via email link
 router.get("/verify-email", verifyEmailController);
 
-
 /**
- * SESSION MANAGEMENT
- * Decision: These should eventually have rate-limiting to prevent brute force.
+ * AUTHENTICATION (Stateless)
  */
 router.post("/login", loginController);
 
-// Decision: Token rotation (Refresh)
+// Token rotation (Refresh)
 router.post("/refresh", refreshController);
 
-// Decision: Invalidation (Logout)
+// Invalidation (Logout)
 router.post("/logout", logoutController);
+
+/**
+ * SESSION MANAGEMENT (Stateful/Protected)
+ * Allows users to view and revoke active devices.
+ */
+router.get("/sessions", authenticate, getSessionsController);
+router.delete("/sessions/:id", authenticate, revokeSessionController);
 
 export default router;

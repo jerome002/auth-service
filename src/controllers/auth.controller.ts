@@ -5,27 +5,44 @@ import { sendResponse } from "../utils/response.util.js";
 import { asyncHandler } from "../utils/asyncHandler.util.js";
 
 /**
+ * Helper: Extract metadata from request
+ * Uses .toString() to ensure we pass a string, even if headers are an array
+ */
+const getMetadata = (req: Request) => ({
+  ip: (req.headers['x-forwarded-for']?.toString() || req.ip || 'unknown'),
+  ua: req.headers['user-agent']?.toString() || 'unknown'
+});
+
+/**
  * Handles User Login
  * POST /api/auth/login
  */
 export const loginController = asyncHandler(async (req: Request, res: Response) => {
-  // 1. Validation: Zod handles the 'email OR username' logic via .refine()
   const input = loginSchema.parse(req.body);
-  
-  // Decision: Cleanly extract whichever identifier was provided
   const identifier = (input.email ?? input.username) as string;
+  const metadata = getMetadata(req);
 
-  // 2. Business Logic
   const data = await AuthService.loginUser({ 
     identifier, 
-    password: input.password 
+    password: input.password,
+    metadata 
   });
 
-  // 3. Response
+  // Set Refresh Token in a secure HttpOnly cookie
+  res.cookie("refreshToken", data.refreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  });
+
   return sendResponse({
     res,
     message: "Login successful",
-    data,
+    data: {
+      user: data.user,
+      accessToken: data.accessToken,
+    },
   });
 });
 
@@ -37,65 +54,71 @@ export const verifyEmailController = asyncHandler(async (req: Request, res: Resp
   const token = req.query.token as string;
 
   if (!token) {
-    return sendResponse({
-      res,
-      status: 400,
-      message: "Verification token is required",
-    });
+    return sendResponse({ res, status: 400, message: "Verification token is required" });
   }
 
   await AuthService.verifyEmail(token);
-
-  return sendResponse({
-    res,
-    message: "Email verified successfully. You can now log in.",
-  });
+  return sendResponse({ res, message: "Email verified successfully." });
 });
 
 /**
  * Handles Token Refresh (Rotation)
- * POST /api/auth/refresh
+ * Decision: Checks cookies first, falls back to body.
  */
 export const refreshController = asyncHandler(async (req: Request, res: Response) => {
-  const { refreshToken } = req.body;
+  const refreshToken = req.cookies.refreshToken || req.body.refreshToken;
 
   if (!refreshToken) {
-    return sendResponse({
-      res,
-      status: 400,
-      message: "Refresh token is required",
-    });
+    return sendResponse({ res, status: 401, message: "Refresh token is required" });
   }
 
-  const data = await AuthService.refreshTokens(refreshToken);
+  const metadata = getMetadata(req);
+  const data = await AuthService.refreshTokens(refreshToken, metadata);
+
+  // Rotate the cookie with the new token
+  res.cookie("refreshToken", data.refreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  });
 
   return sendResponse({
     res,
     message: "Tokens refreshed successfully",
-    data,
+    data: { accessToken: data.accessToken },
   });
 });
 
 /**
  * Handles User Logout
- * POST /api/auth/logout
  */
 export const logoutController = asyncHandler(async (req: Request, res: Response) => {
-  // Decision: We look for the token in the body, but could also check cookies if preferred later
-  const { refreshToken } = req.body;
+  const refreshToken = req.cookies.refreshToken || req.body.refreshToken;
 
-  if (!refreshToken) {
-    return sendResponse({
-      res,
-      status: 400,
-      message: "Refresh token is required to invalidate session",
-    });
+  if (refreshToken) {
+    await AuthService.logoutUser(refreshToken);
   }
 
-  await AuthService.logoutUser(refreshToken);
+  // Clear the cookie regardless of whether the token was found
+  res.clearCookie("refreshToken");
 
-  return sendResponse({
-    res,
-    message: "Logged out successfully.",
-  });
+  return sendResponse({ res, message: "Logged out successfully." });
+});
+
+/**
+ * GET /api/auth/sessions
+ */
+export const getSessionsController = asyncHandler(async (req: Request, res: Response) => {
+  const sessions = await AuthService.getUserSessions(req.user!.id);
+  return sendResponse({ res, message: "Active sessions retrieved", data: sessions });
+});
+
+/**
+ * DELETE /api/auth/sessions/:id
+ */
+export const revokeSessionController = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  await AuthService.revokeSession(req.user!.id, id);
+  return sendResponse({ res, message: "Session revoked successfully" });
 });

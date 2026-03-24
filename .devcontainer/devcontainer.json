@@ -2,7 +2,7 @@
   "name": "FinFlow-Auth-Service",
   "dockerComposeFile": "docker-compose.yml",
   "service": "app",
-  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+  "workspaceFolder": "/workspaces/auth-service",
   "features": {
     "ghcr.io/devcontainers/features/docker-in-docker:1": {}
   },
@@ -17,5 +17,6 @@
     }
   },
   "remoteUser": "node",
-  "postCreateCommand": "npm install && npx prisma generate"
+  "postCreateCommand": "npm install && npx prisma generate",
+  "forwardPorts": [3000, 5432]
 }

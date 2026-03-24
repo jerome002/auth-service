@@ -1,5 +1,6 @@
 generator client {
   provider = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
 }
 
 datasource db {
@@ -32,15 +33,22 @@ model User {
 }
 
 model Token {
-  id        String    @id @default(uuid())
-  token     String    @unique
-  type      TokenType
-  userId    String
-  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  expiresAt DateTime
-  createdAt DateTime  @default(now())
+  id          String    @id @default(uuid())
+  token       String    @unique
+  type        TokenType
+  
+  // Metadata Fields
+  userAgent   String?   
+  ipAddress   String?   
+  lastUsedAt  DateTime  @default(now())
+  
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt   DateTime
+  createdAt   DateTime  @default(now())
 
-  @@index([userId]) // Faster lookups when clearing user sessions
+  @@index([userId])
+  @@index([token]) 
 }
 
 enum Role {

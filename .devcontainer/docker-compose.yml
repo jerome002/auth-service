@@ -3,9 +3,11 @@ services:
   app:
     build:
       context: ..
-      dockerfile: Dockerfile
+      # Path must point to where the file actually is
+      dockerfile: .devcontainer/Dockerfile 
     volumes:
-      - ..:/workspaces/${localWorkspaceFolderBasename}:cached
+      # Use a hardcoded name to prevent "workspace not found" errors
+      - ..:/workspaces/auth-service:cached
     network_mode: service:db
 
   db:

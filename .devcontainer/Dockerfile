@@ -1,19 +1,8 @@
-# Build
-FROM node:20-alpine AS builder
-WORKDIR /app
-COPY package*.json ./
-RUN npm install
-COPY . .
-RUN npx prisma generate
-RUN npm run build
+# Use the stable 'bookworm' variant to ensure Feature compatibility
+FROM mcr.microsoft.com/devcontainers/javascript-node:20-bookworm
 
-# Production
-FROM node:20-alpine
-WORKDIR /app
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/package*.json ./
-COPY --from=builder /app/prisma ./prisma
+# Install PostgreSQL client and openssl
+RUN apt-get update && apt-get install -y postgresql-client openssl
 
-EXPOSE 3000
-CMD ["npm", "start"]
+# Set the workspace
+WORKDIR /workspaces/auth-service

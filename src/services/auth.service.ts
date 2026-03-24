@@ -1,9 +1,9 @@
 import { prisma } from "../config/db.js";
-import { TokenType } from "@prisma/client";
+import { TokenType, User } from "@prisma/client";
 import bcrypt from "bcrypt";
 import crypto from "crypto";
 import { signToken } from "../utils/jwt.util.js";
-import { logger } from "../utils/logger.util.js"; // Decision: Centralized logging
+import { logger } from "../utils/logger.util.js";
 
 /**
  * Custom Error for Authentication specific issues
@@ -11,13 +11,14 @@ import { logger } from "../utils/logger.util.js"; // Decision: Centralized loggi
 export class AuthenticationError extends Error {
   constructor(public message: string, public statusCode: number = 401) {
     super(message);
+    this.name = "AuthenticationError";
   }
 }
 
 /**
- * Private Helper: Generate and Save a new Refresh Token (Session)
+ * Private Helper: Generate and Save a new Refresh Token with Metadata
  */
-const createSession = async (userId: string) => {
+const createSession = async (userId: string, metadata?: { ip?: string; ua?: string }) => {
   const refreshToken = crypto.randomBytes(40).toString("hex");
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 Days
 
@@ -27,6 +28,8 @@ const createSession = async (userId: string) => {
       type: TokenType.REFRESH,
       userId: userId,
       expiresAt,
+      ipAddress: metadata?.ip,
+      userAgent: metadata?.ua,
     },
   });
 
@@ -34,9 +37,9 @@ const createSession = async (userId: string) => {
 };
 
 /**
- * Handles initial login
+ * Handles initial login with metadata capture
  */
-export async function loginUser({ identifier, password }: any) {
+export async function loginUser({ identifier, password, metadata }: any) {
   const user = await prisma.user.findFirst({
     where: {
       OR: [
@@ -64,9 +67,9 @@ export async function loginUser({ identifier, password }: any) {
   }
 
   const accessToken = signToken(user); 
-  const refreshToken = await createSession(user.id);
+  const refreshToken = await createSession(user.id, metadata);
 
-  logger.info(`Login successful [User: ${user.id}]`);
+  logger.info(`Login successful [User: ${user.id}] from IP: ${metadata?.ip}`);
   
   return {
     user: {
@@ -111,9 +114,9 @@ export async function verifyEmail(token: string) {
 }
 
 /**
- * Refresh Token Rotation (RS256)
+ * Refresh Token Rotation with Metadata persistence
  */
-export async function refreshTokens(oldRefreshToken: string) {
+export async function refreshTokens(oldRefreshToken: string, metadata?: { ip?: string; ua?: string }) {
   const savedToken = await prisma.token.findUnique({
     where: {
       token: oldRefreshToken,
@@ -134,7 +137,7 @@ export async function refreshTokens(oldRefreshToken: string) {
   await prisma.token.delete({ where: { id: savedToken.id } });
 
   const accessToken = signToken(savedToken.user);
-  const refreshToken = await createSession(savedToken.user.id);
+  const refreshToken = await createSession(savedToken.user.id, metadata);
 
   logger.debug(`Token rotation successful [User: ${savedToken.userId}]`);
   return { accessToken, refreshToken };
@@ -152,4 +155,41 @@ export async function logoutUser(refreshToken: string) {
   } catch (err) {
     logger.warn("Logout: Token already invalidated or non-existent");
   }
+}
+
+/**
+ * Retrieves all active refresh sessions for a user
+ */
+export async function getUserSessions(userId: string) {
+  return await prisma.token.findMany({
+    where: {
+      userId: userId,
+      type: TokenType.REFRESH,
+      expiresAt: { gt: new Date() },
+    },
+    select: {
+      id: true,
+      userAgent: true,
+      ipAddress: true,
+      lastUsedAt: true,
+      createdAt: true,
+    },
+    orderBy: { lastUsedAt: 'desc' }
+  });
+}
+
+/**
+ * Revokes a specific session by ID
+ */
+export async function revokeSession(userId: string, sessionId: string) {
+  const session = await prisma.token.findFirst({
+    where: { id: sessionId, userId: userId }
+  });
+
+  if (!session) {
+    throw new AuthenticationError("Session not found", 404);
+  }
+
+  await prisma.token.delete({ where: { id: sessionId } });
+  return { success: true };
 }
